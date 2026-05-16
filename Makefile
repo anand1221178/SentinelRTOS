@@ -16,7 +16,7 @@ INCLUDES = -IInc \
 # --- Build Rules ---
 all: all.elf
 
-main.o: Src/main.c Inc/os_kernel.h Tasks/tasks.h Inc/lock.h Drivers/Inc/uart.h Bench/microbench.h Drivers/Inc/servo.h
+main.o: Src/main.c Inc/os_kernel.h Tasks/tasks.h Inc/lock.h Drivers/Inc/uart.h Bench/microbench.h Drivers/Inc/servo.h Drivers/Inc/ultrasonic.h
 	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
 
 uart.o: Drivers/Src/uart.c Drivers/Inc/uart.h
@@ -46,7 +46,10 @@ stm32f411_startup.o: stm32f411_startup.c
 microbench.o: Bench/microbench.c Bench/microbench.h Inc/os_kernel.h Drivers/Inc/uart.h
 	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
 
-all.elf: main.o os_kernel.o os_kernel_asm.o os_tests.o os_queue.o tasks.o stm32f411_startup.o uart.o microbench.o servo.o
+ultrasonic.o: Drivers/Src/ultrasonic.c Drivers/Inc/ultrasonic.h Inc/os_kernel.h
+	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
+
+all.elf: main.o os_kernel.o os_kernel_asm.o os_tests.o os_queue.o tasks.o stm32f411_startup.o uart.o microbench.o servo.o ultrasonic.o
 	$(CC) $(LDFLAGS) $^ -o $@
 
 flash:

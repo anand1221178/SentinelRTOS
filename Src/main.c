@@ -7,6 +7,7 @@
 #include "Bench/microbench.h"
 #include "Drivers/Inc/servo.h"
 #include "os_queue.h"
+#include "ultrasonic.h"
 
 /* Task Stacks */
 uint32_t servo_stack[256];
@@ -44,6 +45,9 @@ int main(void)
     echo_ready.count = 0;
     echo_ready.max_count = 1;
     echo_ready.wait_count = 0;
+
+    /* INtialise ultrasonic sensor */
+    ultrasonic_init();
 
     /* Create Tasks */
     os_task_create(sweep_task, servo_stack, 1);
