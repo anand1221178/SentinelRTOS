@@ -1,118 +1,89 @@
 #include "tasks.h"
 #include "uart.h"
 #include "servo.h"
+#include "ultrasonic.h"
 #include "os_queue.h"
 
-extern os_message_queue_t sweep_queue;
-extern os_semaphore_t echo_ready;
-extern volatile uint32_t time_start;
-extern volatile uint32_t time_end;
+#define SWEEP_STEP_DEG   5
+#define SWEEP_PERIOD_MS  20    /* 50Hz, one servo frame per step */
+#define RADAR_PERIOD_MS  100   /* 10Hz; HC-SR04 needs ~60ms between pings */
 
-/* Forward declares */
-void hardware_delay_us(uint32_t us);
+/* UART is a single shared peripheral: without this, one task's line ends up
+ * interleaved mid-word with another's. */
+static void log_line(const char *label, uint32_t a, const char *label2, uint32_t b)
+{
+    os_mutex_acquire(&uart_lock, WAIT_FOREVER);
+    uart_print(label);
+    uart_print_number(a);
+    if (label2 != NULL)
+    {
+        uart_print(label2);
+        uart_print_number(b);
+    }
+    uart_print("\r\n");
+    os_mutex_release(&uart_lock);
+}
 
 void os_idle_task(void)
 {
-    while(1)
+    for (;;)
     {
-        /* Temporarily disabling WFI to keep debugger alive during power issues */
-        // __asm volatile ("wfi");
-        __NOP();
+        /* Lowest priority task, runs only when everything else is blocked.
+           WFI parks the core until the next interrupt (SysTick at worst), which
+           is free power saving; drop to __NOP() if the debugger loses the core. */
+        __WFI();
     }
 }
 
 void sweep_task(void)
 {
-    /* Gradual Homing to prevent current spikes/brownouts */
+    /* Home gradually: slamming an SG90 across its full range on power-up pulls
+       enough current to brown out the board. */
+    os_mutex_acquire(&uart_lock, WAIT_FOREVER);
     uart_print("[Servo] Gradual homing sequence...\r\n");
-    for(int i = 90; i >= 0; i -= 5) {
-        servo_set_angle(i);
+    os_mutex_release(&uart_lock);
+
+    for (int16_t a = 90; a >= 0; a -= SWEEP_STEP_DEG)
+    {
+        servo_set_angle((uint16_t)a);
         os_delay(50);
     }
     os_delay(500);
 
-    int16_t current_angle = 0;
-    int16_t step = 5; 
+    int16_t angle = 0;
+    int16_t step  = SWEEP_STEP_DEG;
 
-    /* Main loop */
-    while(1)
+    for (;;)
     {
-        servo_set_angle(current_angle);
+        servo_set_angle((uint16_t)angle);
 
-        os_queue_send(&sweep_queue, (uint32_t)current_angle, WAIT_FOREVER);
-        
-        uart_print("[Servo] Angle: ");
-        uart_print_number((uint32_t)current_angle);
-        uart_print("\r\n");
+        /* Non-blocking: if the radar task is behind, the oldest angle gets
+           overwritten rather than stalling the sweep. */
+        os_queue_send(&sweep_queue, (uint32_t)angle, 0);
 
-        current_angle = current_angle + step;
-        
-        if (current_angle >= 180) 
-        {
-            current_angle = 180;
-            step = -5; 
-        }
-        else if (current_angle <= 0) 
-        {
-            current_angle = 0;
-            step = 5; 
-        }
-        
-        /* USed to set rate at 50hz */
-        os_delay(20);
-    }
-}
+        angle += step;
 
-void hardware_delay_us(uint32_t us)
-{
-    uint32_t iterations = us * 4; 
-    for (uint32_t i = 0; i < iterations; i++)
-    {
-        __NOP(); 
+        if (angle >= 180) { angle = 180; step = -SWEEP_STEP_DEG; }
+        else if (angle <= 0) { angle = 0; step = SWEEP_STEP_DEG; }
+
+        os_delay(SWEEP_PERIOD_MS);
     }
 }
 
 void radar_task(void)
 {
-    uint32_t received_angle = 0;
-    uint32_t distance = 0;
+    uint32_t angle = 0;
 
-    while(1)
+    for (;;)
     {
-        /* We are sending the pulse here:
-        - We send a 10us HIGH pulse on the trigger pin
-        - The sensor fires 8 pulses at 40khz
-        - echo pin stays high until the pulse comes back
-        - When the bounce comes back the pin goes low
-        need to measure that width — the time between the rising edge (echo goes HIGH) and the falling edge (echo goes LOW)
-        */
-        GPIOA->ODR |= (1U << TRIG_PIN);  
-        hardware_delay_us(10);           
-        GPIOA->ODR &= ~(1U << TRIG_PIN); 
-        
-        if (os_semaphore_acquire(&echo_ready, 100) == OS_SUCCESS)
-        {
-            distance = (time_end - time_start) / 58;
-            
-            if (os_queue_receive(&sweep_queue, &received_angle, 0) == OS_SUCCESS)
-            {
-                uart_print("Angle: ");
-                uart_print_number(received_angle);
-                uart_print(" | Dist: ");
-                uart_print_number(distance);
-                uart_print(" cm\r\n");
-            }
-        }
-        
-        os_delay(100); 
-    }
+        uint32_t distance = ultrasonic_read_cm(60);
 
-    /* TO measure the echo pulse width:
-    - We configure a timer to count at 1mhz
-    - WE conncet the echo pin to a timer channel
-    - Hardware auto snapshots the counter value when it sees an edge on the pin
-    - Rising edge -> hardware saves counter value into TIM2->CCR1 = time_start
-    - Falling edge -> hardware saves counter value into TIM2->CCR1 = time_end
-    - Each edge causes an interrupt and ISR needs to read the caputered value
-    */
+        if (distance != ULTRASONIC_NO_ECHO &&
+            os_queue_receive(&sweep_queue, &angle, 0) == OS_SUCCESS)
+        {
+            log_line("[Radar] Angle: ", angle, " | Dist (cm): ", distance);
+        }
+
+        os_delay(RADAR_PERIOD_MS);
+    }
 }

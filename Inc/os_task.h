@@ -15,17 +15,19 @@ typedef enum
 /* Task Control Block (TCB) */
 typedef struct TCB
 {
-    /* data */
-    uint32_t *stackPtr; /* Current stack ptr (has to be first since required in the assembly) */
-    TaskState_t state; /* Current state of the task */
-    uint8_t base_priority; /* Task priority (0 being highest) */
-    uint8_t current_priority; /* current priority can differ from base */
-    uint32_t stackSize; /* Size of the stack in words */
-    uint32_t timeout; /* USe for os-delay */
-    struct TCB *next; /* ptr to the next task in the circle */
-    uint32_t sleep_time; /* Time remaining in sleep (ms) */
+    uint32_t *stackPtr;        /* Current stack ptr (MUST stay first: os_kernel_asm.s assumes offset 0) */
+    TaskState_t state;         /* Current state of the task */
+    uint8_t base_priority;     /* Priority the task was created with (higher number = higher priority) */
+    uint8_t current_priority;  /* Effective priority; raised above base by priority inheritance */
+    uint32_t *stackBase;       /* Lowest address of the task stack (holds the overflow canary) */
+    uint32_t stackSize;        /* Size of the stack in 32-bit words */
+    uint32_t sleep_time;       /* Ticks left before the kernel wakes the task (0 = not timing out) */
 
-
+    /* Set while the task sits in a mutex/semaphore wait queue, so the tick handler
+       can pull it back out when its timeout expires. */
+    struct TCB **wait_queue;
+    uint8_t *wait_count;
+    uint8_t wait_result;       /* OS_SUCCESS if handed the resource, OS_TIMEOUT if it timed out */
 } TCB_t;
 
 #endif

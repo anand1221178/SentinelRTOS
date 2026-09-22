@@ -6,16 +6,10 @@
 #include "os_queue.h"
 #include "stm32f4xx.h"
 
-#define TRIG_PIN 0  /* Example: PA0 */
-/* In tasks.h */
-extern os_semaphore_t echo_ready;
-extern volatile uint32_t time_start;
-extern volatile uint32_t time_end;
-
-/* Extern declarations for shared resources defined in main.c */
-extern uint32_t servo_stack[256];
+/* Shared resources, defined in main.c */
 extern os_message_queue_t sweep_queue;
-extern uint32_t sweep_queue_buffer[8];
+extern os_semaphore_t echo_ready;
+extern os_mutex_t uart_lock;
 
 void os_idle_task(void);
 void sweep_task(void);

@@ -1,64 +1,71 @@
-# --- Variables ---
-CC = arm-none-eabi-gcc
-MACH = cortex-m4
-CFLAGS = -c -mcpu=$(MACH) -mthumb -std=gnu11 -DSTM32F411xE -g -O0
-LDFLAGS = -mcpu=$(MACH) -mthumb -nostartfiles -T stm32_ls.ld --specs=nano.specs --specs=nosys.specs -Wl,-Map=all.map
+# --- Toolchain ---
+CC       = arm-none-eabi-gcc
+OBJCOPY  = arm-none-eabi-objcopy
+SIZE     = arm-none-eabi-size
+MACH     = cortex-m4
 
-# Updated Includes
-INCLUDES = -IInc \
-           -ITasks \
-           -IKernel \
-           -IDrivers/Inc \
-           -IBench \
-           -I/Users/anand/stm32_dev/CMSIS/Include \
-           -I/Users/anand/stm32_dev/CMSIS/Device/ST/STM32F4xx/Include
+CMSIS   ?= /Users/anand/stm32_dev/CMSIS
 
-# --- Build Rules ---
-all: all.elf
+# -O2 roughly halves the kernel primitive cost vs -O0 (see BENCHMARKS.md), so
+# the benchmarks and the shipping build both use it.
+OPT     ?= -O2
 
-main.o: Src/main.c Inc/os_kernel.h Tasks/tasks.h Inc/lock.h Drivers/Inc/uart.h Bench/microbench.h Drivers/Inc/servo.h Drivers/Inc/ultrasonic.h
-	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
+CFLAGS  = -mcpu=$(MACH) -mthumb -std=gnu11 -DSTM32F411xE -g $(OPT) \
+          -Wall -Wextra -Wno-unused-parameter -ffunction-sections -fdata-sections
+LDFLAGS = -mcpu=$(MACH) -mthumb -nostartfiles -T stm32_ls.ld \
+          --specs=nano.specs --specs=nosys.specs -Wl,--gc-sections -Wl,-Map=build/all.map
 
-uart.o: Drivers/Src/uart.c Drivers/Inc/uart.h
-	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
+INCLUDES = -IInc -ITasks -IKernel -IDrivers/Inc -IBench \
+           -I$(CMSIS)/Include -I$(CMSIS)/Device/ST/STM32F4xx/Include
 
-servo.o: Drivers/Src/servo.c Drivers/Inc/servo.h Inc/os_kernel.h
-	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
+BUILD = build
 
-os_kernel.o: Kernel/os_kernel.c Inc/os_kernel.h Inc/lock.h
-	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
+SRCS = Src/main.c \
+       Kernel/os_kernel.c Kernel/os_queue.c Kernel/os_tests.c \
+       Tasks/tasks.c \
+       Bench/microbench.c \
+       Drivers/Src/uart.c Drivers/Src/gpio.c Drivers/Src/pwm.c Drivers/Src/spi.c \
+       Drivers/Src/i2c.c Drivers/Src/adc.c Drivers/Src/servo.c Drivers/Src/ultrasonic.c \
+       stm32f411_startup.c
 
-os_tests.o: Kernel/os_tests.c Inc/os_kernel.h Drivers/Inc/uart.h
-	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
+ASMS = Kernel/os_kernel_asm.s
 
-os_queue.o: Kernel/os_queue.c Inc/os_queue.h Inc/os_kernel.h
-	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
+OBJS = $(addprefix $(BUILD)/,$(SRCS:.c=.o) $(ASMS:.s=.o))
+DEPS = $(OBJS:.o=.d)
 
-os_kernel_asm.o: Kernel/os_kernel_asm.s
-	$(CC) $(CFLAGS) $< -o $@
+# --- Build ---
+all: $(BUILD)/all.elf
 
-tasks.o: Tasks/tasks.c Tasks/tasks.h Inc/os_kernel.h
-	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
+$(BUILD)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(CFLAGS) $(INCLUDES) -MMD -MP $< -o $@
 
-stm32f411_startup.o: stm32f411_startup.c
-	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
+$(BUILD)/%.o: %.s
+	@mkdir -p $(dir $@)
+	$(CC) -c $(CFLAGS) $< -o $@
 
-microbench.o: Bench/microbench.c Bench/microbench.h Inc/os_kernel.h Drivers/Inc/uart.h
-	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
-
-ultrasonic.o: Drivers/Src/ultrasonic.c Drivers/Inc/ultrasonic.h Inc/os_kernel.h
-	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@
-
-all.elf: main.o os_kernel.o os_kernel_asm.o os_tests.o os_queue.o tasks.o stm32f411_startup.o uart.o microbench.o servo.o ultrasonic.o
+$(BUILD)/all.elf: $(OBJS)
 	$(CC) $(LDFLAGS) $^ -o $@
+	$(SIZE) $@
 
-flash:
-	arm-none-eabi-gdb -batch \
-	all.elf \
+# Builds the same firmware with the ping-pong context-switch benchmark tasks
+# in place of the radar application.
+bench:
+	$(MAKE) clean
+	$(MAKE) CFLAGS="$(CFLAGS) -DSENTINEL_BENCH" all
+
+# --- Host-side kernel tests (no board required) ---
+test:
+	gcc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -ITest -IInc \
+	    Test/test_kernel.c Kernel/os_kernel.c Kernel/os_queue.c -o $(BUILD)/test_kernel
+	./$(BUILD)/test_kernel
+
+# --- Flash ---
+flash: $(BUILD)/all.elf
+	arm-none-eabi-gdb -batch $(BUILD)/all.elf \
 	-ex "target remote localhost:3333" \
-	-ex "monitor halt" \
 	-ex "monitor reset halt" \
-	-ex "monitor flash write_image erase all.elf" \
+	-ex "monitor flash write_image erase $(BUILD)/all.elf" \
 	-ex "monitor reset halt" \
 	-ex "monitor resume"
 
@@ -66,4 +73,8 @@ load:
 	openocd -f board/st_nucleo_f4.cfg
 
 clean:
-	rm -f *.o *.elf *.map
+	rm -rf $(BUILD)
+
+.PHONY: all bench test flash load clean
+
+-include $(DEPS)

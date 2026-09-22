@@ -24,9 +24,9 @@ SECTIONS
     witred to look at the start addr. we wont need a _stext*/
     {
         . = ALIGN(4); /*Align the start of the .text section on a 4-byte boundary -> enhances memory access effciency -> crucial for processors fetching instructions in word sized chunks*/
-        *(.isr_vector_tbl) /*pulls in all sections named .isr_tbl from the input files into the current location in the text section -> since we use the wildcard it gets all of them*/
-        *(.text) /*Pulls all sections named .text from the input files into the current location in the .text seection*/
-        *(.rodata) /*Pulls all sections named .rodata from the input files into the current location in the .text section*/
+        KEEP(*(.isr_vector_tbl)) /*KEEP stops --gc-sections discarding the vector table: nothing in C references it, the hardware just reads it from address 0. Pulls in all sections named .isr_tbl from the input files into the current location in the text section -> since we use the wildcard it gets all of them*/
+        *(.text) *(.text*) /*The .text* pattern catches the per-function sections -ffunction-sections emits. Pulls all sections named .text from the input files into the current location in the .text seection*/
+        *(.rodata) *(.rodata*) /*Pulls all sections named .rodata from the input files into the current location in the .text section*/
         . = ALIGN(4); /*Again sensure we align to a 4-byte boundary, we use it here to align the end of a section - ensures the next section starts on an aligned boundary*/
         _etext = .; /*We use this symbol as a ptr to the end of the .txt section to mark the end of the .text seciton*/
     }>FLASH /*specify that the .text seciton should be placed in the FLASH memory segment as defined earlier in the MEMMORY block seciton*/
@@ -38,7 +38,7 @@ SECTIONS
     {
         . = ALIGN(4); /*Basic align to the 4-byte boundaries*/
         _sdata = .; /*Represent the start of the .data section by setting it to the current location counter*/
-        *(.data) /*Pulls all sections named .data from all the input files into the curernt location*/
+        *(.data) *(.data*) /*Pulls all sections named .data from all the input files into the curernt location*/
         . = ALIGN(4); /*Align the end of the section to a 4-byte boundary*/
         _edata = .; /*Similar to sdata, we need to know the end of the that data section which will be moved to flash*/
     } > SRAM AT> FLASH /*>(vma) AT> (lma); >SRAM denotes that the section should be lcoated in the SRAM, AT> FLASH tells the linker that 
@@ -49,7 +49,7 @@ SECTIONS
         {
             . = ALIGN(4);
             _sbss = .;
-            *(.bss)
+            *(.bss) *(.bss*) *(COMMON)
             . = ALIGN(4);
             _ebss = .;
         }>SRAM

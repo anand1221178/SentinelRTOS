@@ -1,61 +1,63 @@
-#include <stdlib.h>
-#include "os_task.h"
-#include "lock.h"
 #include "os_kernel.h"
+#include "os_queue.h"
 #include "tasks.h"
 #include "uart.h"
-#include "Bench/microbench.h"
-#include "Drivers/Inc/servo.h"
-#include "os_queue.h"
+#include "servo.h"
 #include "ultrasonic.h"
+#include "microbench.h"
 
-/* Task Stacks */
-uint32_t servo_stack[256];
-uint32_t radar_stack[256];
-uint32_t idle_stack[256];
+/* Task stacks. 256 words = 1KB each; the kernel writes a canary at [0] and
+   checks it on every context switch. */
+static uint32_t idle_stack[STACK_SIZE];
 
-/* Queue Resources */
+#ifdef SENTINEL_BENCH
+static uint32_t ping_stack[STACK_SIZE];
+static uint32_t pong_stack[STACK_SIZE];
+#else
+static uint32_t sweep_stack[STACK_SIZE];
+static uint32_t radar_stack[STACK_SIZE];
+#endif
+
+/* Shared resources */
 os_message_queue_t sweep_queue;
-uint32_t sweep_queue_buffer[8];
-
-/* Ultrasonic Resources */
+static uint32_t sweep_queue_buffer[8];
 os_semaphore_t echo_ready;
-volatile uint32_t time_start = 0;
-volatile uint32_t time_end = 0;
+os_mutex_t uart_lock;
 
 int main(void)
 {
-    /* Initialize Kernel */
     os_kernel_init();
-
-    /* Initialize UART */
     uart_init();
+    microbench_init();
+
     uart_print("--- SENTINEL RTOS BOOTING ---\r\n");
 
-    /* Run Power-On Self-Tests */
     os_run_post();
 
-    /* Initialize Peripherals */
+    /* Peripherals */
     servo_init();
-    
-    /* Initialize Synchronization Primitives */
-    os_queue_init(&sweep_queue, sweep_queue_buffer, 8);
-    
-    /* Binary semaphore for Ultrasonic (starts at 0) */
-    echo_ready.count = 0;
-    echo_ready.max_count = 1;
-    echo_ready.wait_count = 0;
-
-    /* INtialise ultrasonic sensor */
     ultrasonic_init();
 
-    /* Create Tasks */
-    os_task_create(sweep_task, servo_stack, 1);
-    os_task_create(radar_task, radar_stack, 1);
-    os_task_create(os_idle_task, idle_stack, 0);
+    /* Synchronization primitives. echo_ready is binary and starts empty: the
+       capture ISR posts it when an echo comes back. */
+    os_queue_init(&sweep_queue, sweep_queue_buffer, 8);
+    os_semaphore_init(&echo_ready, 0, 1);
+    os_mutex_init(&uart_lock);
 
-    /* Launch the kernel */
+    /* Higher number = higher priority. Idle must be strictly lowest. */
+#ifdef SENTINEL_BENCH
+    os_task_create(bench_ping_task, ping_stack, STACK_SIZE, 2);
+    os_task_create(bench_pong_task, pong_stack, STACK_SIZE, 2);
+#else
+    os_task_create(radar_task, radar_stack, STACK_SIZE, 2);
+    os_task_create(sweep_task, sweep_stack, STACK_SIZE, 1);
+#endif
+    os_task_create(os_idle_task, idle_stack, STACK_SIZE, 0);
+
+    /* After task creation so the scheduler benchmark sees a realistic task set. */
+    microbench_run_all();
+
     os_kernel_launch();
 
-    while(1){}; /* DONT REACH HERE! */
+    for (;;) { }   /* Unreachable: os_kernel_launch() never returns */
 }

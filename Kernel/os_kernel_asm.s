@@ -2,83 +2,62 @@
 .thumb
 .text
 
-@ External symbols
+@ current_tcb->stackPtr is at offset 0 of the TCB (see os_task.h).
 .extern current_tcb
 .extern os_scheduler
 
-@ Global symbols
-.global os_kernel_launch_asm
 .global os_start_first_task
 .global PendSV_Handler
 
-.thumb_func
-os_kernel_launch_asm:
-    LDR     R0, =current_tcb    
-    LDR     R2, [R0]            
-    LDR     SP, [R2]            
-    LDMIA   SP!, {R4-R11}       
-    LDMIA   SP!, {R0-R3}        
-    LDMIA   SP!, {R12, LR}      
-    LDMIA   SP!, {PC}           
-
+@ ---------------------------------------------------------------------------
+@ PendSV_Handler - the context switch.
+@ The hardware already stacked R0-R3, R12, LR, PC and xPSR on the outgoing
+@ task's PSP before entry, and pops them again on exception return. All this
+@ handler owns is R4-R11 (the "software frame") and the PSP bookkeeping.
+@ ---------------------------------------------------------------------------
 .thumb_func
 PendSV_Handler:
-    @ --- 1. SAVE CONTEXT ---
-    MRS     R0, PSP             @ Get current task's stack pointer
-    STMDB   R0!, {R4-R11}       @ Push registers R4-R11 onto task stack
-    
-    @ Store the updated SP back into the TCB
-    LDR     R1, =current_tcb    
-    LDR     R1, [R1]            @ R1 = address of current_tcb
-    STR     R0, [R1]            @ current_tcb->stackPtr = R0
+    @ --- 1. Save the outgoing context ---
+    MRS     R0, PSP                 @ R0 = outgoing task's stack pointer
+    STMDB   R0!, {R4-R11}           @ Push R4-R11 onto that task's stack
 
-    @ --- 2. SELECT NEXT TASK ---
-    PUSH    {LR}                @ Save EXC_RETURN
-    BL      os_scheduler        @ Call the C scheduler
-    POP     {LR}                @ Restore EXC_RETURN
+    LDR     R1, =current_tcb
+    LDR     R1, [R1]                @ R1 = current_tcb
+    STR     R0, [R1]                @ current_tcb->stackPtr = R0
 
-    @ --- 3. RESTORE CONTEXT ---
-    @ Load the new task's stack pointer
-    LDR     R1, =current_tcb    
-    LDR     R1, [R1]            @ R1 = address of new current_tcb
-    LDR     R0, [R1]            @ R0 = new_tcb->stackPtr
+    @ --- 2. Pick the next task ---
+    PUSH    {LR}                    @ EXC_RETURN must survive the C call
+    BL      os_scheduler
+    POP     {LR}
 
-    @ Pop registers R4-R11 from the new task's stack
-    LDMIA   R0!, {R4-R11}       
-    MSR     PSP, R0             @ Update PSP with new stack pointer
+    @ --- 3. Restore the incoming context ---
+    LDR     R1, =current_tcb
+    LDR     R1, [R1]                @ R1 = new current_tcb
+    LDR     R0, [R1]                @ R0 = new_tcb->stackPtr
 
-    BX      LR                  @ Return to new task
+    LDMIA   R0!, {R4-R11}           @ Pop its R4-R11
+    MSR     PSP, R0                 @ Hardware pops the rest from here
 
+    BX      LR                      @ Exception return into the new task
+
+@ ---------------------------------------------------------------------------
+@ os_start_first_task - one-way trip from main() into the first task.
+@ Called from Thread mode, where EXC_RETURN is not available, so the initial
+@ frame is skipped by hand: set PSP past it and branch to the entry point.
+@ ---------------------------------------------------------------------------
 .thumb_func
 os_start_first_task:
-    @ 1. Get current_tcb->stackPtr
-    LDR     R0, =current_tcb    
-    LDR     R1, [R0]            
-    LDR     R0, [R1]            @ R0 = stackPtr (points to R4)
+    LDR     R0, =current_tcb
+    LDR     R1, [R0]
+    LDR     R0, [R1]                @ R0 = stackPtr (bottom of the R4-R11 frame)
 
-    @ 2. Pop the software frame (R4-R11) manually from R0
-    LDMIA   R0!, {R4-R11}
+    LDR     R1, [R0, #56]           @ PC slot: 8 words (R4-R11) + 6 (R0-R3,R12,LR)
+    ADDS    R0, R0, #64             @ Discard the whole initial frame
+    MSR     PSP, R0
 
-    @ 3. Pop the hardware frame (R0-R3, R12, LR, PC, xPSR)
-    @ We need the PC to jump, and the rest to clear the stack
-    LDMIA   R0!, {R1-R3}        @ R1=R0, R2=R1, R3=R2 (dummy)
-    LDMIA   R0!, {R2}           @ R2=R3 (dummy)
-    LDMIA   R0!, {R3}           @ R3=R12 (dummy)
-    LDMIA   R0!, {R12}          @ R12=LR (dummy)
-    LDMIA   R0!, {R1}           @ R1 = PC (Actual task function)
-    @ xPSR is left on stack, but we'll set PSP to the final R0 value
-    ADD     R0, R0, #4          @ Skip xPSR
+    MOVS    R2, #2                  @ CONTROL.SPSEL = 1: threads run on PSP,
+    MSR     CONTROL, R2             @ handlers keep using MSP
+    ISB
 
-    @ 4. Set PSP to the cleaned up stack pointer
-    MSR     PSP, R0             
-
-    @ 5. Switch to using PSP (Set bit 1 of CONTROL register)
-    MOV     R2, #2
-    MSR     CONTROL, R2
-    ISB                         @ Instruction Synchronization Barrier
-
-    @ 6. Global enable interrupts
     CPSIE   I
-    
-    @ 7. Jump to the task!
-    BX      R1
+    BX      R1                      @ Run the task
